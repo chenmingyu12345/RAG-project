@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Laike RAG - 后台管理</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}
+.stat-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
+.stat-card .stat-label{font-size:12px;color:var(--text-secondary);margin-bottom:4px}
+.stat-card .stat-value{font-size:24px;font-weight:700;color:var(--primary)}
+.upload-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:40px;text-align:center;cursor:pointer;transition:all .2s}
+.upload-zone:hover,.upload-zone.dragover{border-color:var(--primary);background:rgba(37,99,235,.04)}
+.upload-zone .icon{font-size:36px;margin-bottom:8px}
+.file-list-item{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--border)}
+.file-list-item:last-child{border-bottom:none}
+.file-list-item .file-info{display:flex;align-items:center;gap:10px}
+.file-list-item .file-icon{font-size:20px}
+.file-list-item .file-name{font-weight:500;font-size:14px}
+.file-list-item .file-meta{font-size:12px;color:var(--text-secondary)}
+.test-result{background:var(--bg);border-radius:var(--radius);padding:16px;margin-top:12px;max-height:400px;overflow-y:auto}
+.config-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.config-item{display:flex;flex-direction:column;gap:4px}
+.config-item label{font-size:13px;font-weight:500;color:var(--text-secondary)}
+.config-item .config-row{display:flex;gap:8px}
+.config-item .config-row input{flex:1}
+.config-item .config-row button{padding:6px 14px;font-size:13px;white-space:nowrap}
+#testStages{display:flex;gap:12px;margin-top:12px}
+.stage-badge{flex:1;background:var(--bg);border-radius:6px;padding:10px 12px;text-align:center}
+.stage-badge .stage-name{font-size:12px;color:var(--text-secondary);margin-bottom:2px}
+.stage-badge .stage-value{font-size:16px;font-weight:700;color:var(--primary)}
+</style>
+</head>
+<body>
+<nav class="navbar">
+  <span class="logo">Laike RAG - 后台管理</span>
+</nav>
+
+<div class="container" id="app">
+  <div class="tabs" id="tabs">
+    <div class="tab active" data-tab="documents">文档管理</div>
+    <div class="tab" data-tab="status">知识库状态</div>
+    <div class="tab" data-tab="test">问答测试</div>
+    <div class="tab" data-tab="config">系统配置</div>
+  </div>
+
+  <!-- 文档管理 -->
+  <div id="tab-documents">
+    <div class="card">
+      <h3>上传文档</h3>
+      <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+        <div class="icon">&#128196;</div>
+        <p>点击或拖拽文件到此处上传</p>
+        <p class="text-sm text-secondary">支持 .txt .pdf .md .csv 格式</p>
+      </div>
+      <input type="file" id="fileInput" multiple accept=".txt,.pdf,.md,.csv" style="display:none" onchange="uploadFiles(this.files)">
+      <div id="uploadStatus" class="mt-16"></div>
+    </div>
+    <div class="card">
+      <div class="flex flex-between flex-center mb-16">
+        <h3 style="margin-bottom:0">文档列表</h3>
+        <button class="btn-outline btn-sm" onclick="refreshDocs()">刷新</button>
+      </div>
+      <div id="docList"><div class="empty"><p>加载中...</p></div></div>
+    </div>
+  </div>
+
+  <!-- 知识库状态 -->
+  <div id="tab-status" style="display:none">
+    <div class="stats-grid" id="statsGrid"></div>
+    <div class="card">
+      <div class="flex flex-between flex-center mb-16">
+        <h3 style="margin-bottom:0">索引详情</h3>
+        <button class="btn-primary btn-sm" onclick="rebuildIndex()">重建索引</button>
+      </div>
+      <div id="indexDetail"><div class="empty"><p>加载中...</p></div></div>
+    </div>
+  </div>
+
+  <!-- 问答测试 -->
+  <div id="tab-test" style="display:none">
+    <div class="card">
+      <h3>RAG 问答测试</h3>
+      <div class="flex flex-gap">
+        <input type="text" id="testQuestion" placeholder="输入测试问题..." onkeydown="if(event.key==='Enter')testQuery()">
+        <button class="btn-primary" onclick="testQuery()" id="testBtn">提问</button>
+      </div>
+      <div id="testStages"></div>
+      <div id="testResult"></div>
+    </div>
+  </div>
+
+  <!-- 系统配置 -->
+  <div id="tab-config" style="display:none">
+    <div class="card">
+      <h3>系统参数配置</h3>
+      <p class="text-sm text-secondary mb-16">修改后即时生效，重启服务后依然保留</p>
+      <div class="config-grid" id="configGrid"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+
+// Tab 切换
+$$('#tabs .tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    $$('#tabs .tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    const name = tab.dataset.tab;
+    $$('#app > [id^=tab-]').forEach(el => el.style.display = 'none');
+    $(`#tab-${name}`).style.display = '';
+
+    if(name === 'documents') refreshDocs();
+    if(name === 'status') loadStatus();
+    if(name === 'config') loadConfig();
+  });
+});
+
+// ==================== Toast ====================
+function toast(msg, type='success'){
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ==================== 文档管理 ====================
+async function refreshDocs(){
+  try{
+    const data = await fetch('/sources').then(r=>r.json());
+    if(!data.files.length){
+      $('#docList').innerHTML = '<div class="empty"><div class="icon">&#128203;</div><p>暂无文档，请上传文件</p></div>';
+      return;
+    }
+    $('#docList').innerHTML = data.files.map(f => `
+      <div class="file-list-item">
+        <div class="file-info">
+          <span class="file-icon">${f.type==='.pdf'?'&#128240;':'&#128203;'}</span>
+          <div>
+            <div class="file-name">${f.name}</div>
+            <div class="file-meta">${formatSize(f.size)} &middot; ${f.modified.slice(0,16)}</div>
+          </div>
+        </div>
+        <button class="btn-danger btn-sm" onclick="deleteDoc('${f.name}')">删除</button>
+      </div>
+    `).join('');
+  }catch(e){$('#docList').innerHTML='<div class="empty"><p>加载失败</p></div>';}
+}
+
+function uploadFiles(files){
+  if(!files.length) return;
+  const formData = new FormData();
+  for(const f of files) formData.append('files', f);
+
+  $('#uploadStatus').innerHTML = '<div class="spinner"></div> 上传中...';
+
+  fetch('/upload', {method:'POST', body:formData})
+    .then(r => r.json())
+    .then(data => {
+      let msg = `上传成功 ${data.uploaded.length} 个文件`;
+      if(data.skipped.length) msg += `，跳过 ${data.skipped.length} 个`;
+      if(data.skipped.length) msg += ` (${data.skipped.map(s=>s.reason).join('; ')})`;
+      $('#uploadStatus').innerHTML = '';
+      toast(msg, data.uploaded.length ? 'success' : 'error');
+      refreshDocs();
+      document.getElementById('fileInput').value = '';
+    })
+    .catch(() => {
+      $('#uploadStatus').innerHTML = '';
+      toast('上传失败', 'error');
+    });
+}
+
+// 拖拽上传
+const zone = $('#uploadZone');
+zone.addEventListener('dragover', e => {e.preventDefault();zone.classList.add('dragover')});
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', e => {
+  e.preventDefault();zone.classList.remove('dragover');
+  uploadFiles(e.dataTransfer.files);
+});
+
+async function deleteDoc(name){
+  if(!confirm(`确定删除 ${name} 吗？`)) return;
+  try{
+    await fetch(`/documents/${name}`, {method:'DELETE'});
+    toast(`已删除: ${name}`);
+    refreshDocs();
+  }catch(e){toast('删除失败','error');}
+}
+
+// ==================== 知识库状态 ====================
+async function loadStatus(){
+  try{
+    const data = await fetch('/stats').then(r=>r.json());
+    const idx = data.index;
+    const stats = [
+      {label:'文档片段', value: idx.document_count || idx.error || 0},
+      {label:'向量集合', value: idx.collection || '-'},
+      {label:'大模型', value: data.config?.model || '-'},
+      {label:'Embedding', value: data.config?.embedding_provider || '-'},
+    ];
+    $('#statsGrid').innerHTML = stats.map(s => `
+      <div class="stat-card">
+        <div class="stat-label">${s.label}</div>
+        <div class="stat-value">${s.value}</div>
+      </div>
+    `).join('');
+
+    $('#indexDetail').innerHTML = `<table>
+      <tr><th>持久化目录</th><td>${idx.persist_dir || '-'}</td></tr>
+      <tr><th>集合名称</th><td>${idx.collection || '-'}</td></tr>
+      <tr><th>文档数量</th><td>${idx.document_count || 0}</td></tr>
+    </table>`;
+  }catch(e){
+    $('#indexDetail').innerHTML='<div class="empty"><p>状态加载失败</p></div>';
+  }
+}
+
+async function rebuildIndex(){
+  if(!confirm('重建索引将清空现有向量库并重新构建，确定继续？')) return;
+  toast('正在重建索引...', 'info');
+  try{
+    const data = await fetch('/rebuild-index', {method:'POST'}).then(r=>r.json());
+    toast(data.msg || '重建完成');
+    loadStatus();
+  }catch(e){toast('重建失败','error');}
+}
+
+// ==================== 问答测试 ====================
+async function testQuery(){
+  const q = $('#testQuestion').value.trim();
+  if(!q) return;
+
+  $('#testBtn').disabled = true;
+  $('#testBtn').innerHTML = '<span class="spinner"></span>';
+  $('#testResult').innerHTML = '';
+  $('#testStages').innerHTML = '';
+
+  try{
+    const data = await fetch('/query', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({question: q})
+    }).then(r=>r.json());
+
+    // 阶段统计
+    const stages = data.stages || {};
+    const r1 = stages.recall || {};
+    const r2 = stages.rerank || {};
+    const r3 = stages.generate || {};
+
+    $('#testStages').innerHTML = `
+      <div class="stage-badge">
+        <div class="stage-name">召回</div>
+        <div class="stage-value">${r1.count||0}条 / ${r1.elapsed_ms||0}ms</div>
+      </div>
+      <div class="stage-badge">
+        <div class="stage-name">重排</div>
+        <div class="stage-value">${r2.count||0}条 / ${r2.elapsed_ms||0}ms</div>
+      </div>
+      <div class="stage-badge">
+        <div class="stage-name">生成</div>
+        <div class="stage-value">${r3.context_chunks||0}片段 / ${r3.elapsed_ms||0}ms</div>
+      </div>
+    `;
+
+    let html = `<h4 style="margin-top:16px">回答</h4><p style="background:var(--bg);padding:12px;border-radius:6px;margin-top:8px">${data.answer||'-'}</p>`;
+
+    if(data.sources && data.sources.length){
+      html += `<h4 style="margin-top:16px">参考来源</h4>`;
+      data.sources.forEach((s,i) => {
+        html += `<div style="padding:8px;margin:4px 0;background:var(--bg);border-radius:6px;font-size:13px">
+          <strong>[${i+1}] ${s.file||''}</strong> (score: ${s.rerank_score||0})<br>
+          <span style="color:#64748b">${s.preview||''}...</span>
+        </div>`;
+      });
+    }
+
+    $('#testResult').innerHTML = html;
+  }catch(e){
+    $('#testResult').innerHTML = '<p style="color:#ef4444">请求失败: '+e.message+'</p>';
+  }
+  $('#testBtn').disabled = false;
+  $('#testBtn').textContent = '提问';
+}
+
+// ==================== 系统配置 ====================
+async function loadConfig(){
+  try{
+    const data = await fetch('/config').then(r=>r.json());
+    const cfg = data.config || {};
+    $('#configGrid').innerHTML = Object.entries(cfg).map(([k,v]) => `
+      <div class="config-item">
+        <label title="${k}">${v.description}</label>
+        <div class="config-row">
+          <input value="${v.value||''}" data-key="${k}" placeholder="${k}">
+          <button class="btn-outline btn-sm" onclick="saveConfig('${k}', this.previousElementSibling.value)">保存</button>
+        </div>
+      </div>
+    `).join('');
+  }catch(e){}
+}
+
+async function saveConfig(key, value){
+  try{
+    await fetch('/config', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({key, value})
+    });
+    toast(`已更新: ${key}`);
+  }catch(e){toast('保存失败','error');}
+}
+
+// ==================== 工具 ====================
+function formatSize(bytes){
+  if(bytes < 1024) return bytes + ' B';
+  if(bytes < 1048576) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/1048576).toFixed(1) + ' MB';
+}
+
+// 初始化加载
+refreshDocs();
+</script>
+</body>
+</html>

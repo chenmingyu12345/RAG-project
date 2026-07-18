@@ -1,0 +1,18 @@
+# .dockerignore - 排除非必要文件
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+venv/
+.venv/
+env/
+*.egg-info/
+chroma_db/
+*.sqlite3
+.DS_Store
+Thumbs.db
+*.log
+.env.example
+_test_*.py
+test_*.py

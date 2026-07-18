@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Laike RAG - AI 问答助手</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.chat-wrap{max-width:800px;margin:0 auto;display:flex;flex-direction:column;height:calc(100vh - 52px)}
+.chat-messages{flex:1;overflow-y:auto;padding:20px 0}
+.msg{display:flex;margin-bottom:20px;animation:fadeIn .3s ease}
+.msg.user{justify-content:flex-end}
+.msg-avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;margin:0 12px}
+.msg.assistant .msg-avatar{background:#dbeafe;color:var(--primary)}
+.msg.user .msg-avatar{background:#e0e7ff;color:#4f46e5}
+.msg-bubble{max-width:75%;padding:12px 16px;border-radius:12px;font-size:14px;line-height:1.7;word-break:break-word}
+.msg.assistant .msg-bubble{background:var(--bg-card);border:1px solid var(--border);border-top-left-radius:4px}
+.msg.user .msg-bubble{background:var(--primary);color:#fff;border-top-right-radius:4px}
+.msg-sources{margin-top:10px;padding:8px 12px;background:var(--bg);border-radius:6px;font-size:12px}
+.msg-sources .src-item{margin:4px 0;color:var(--text-secondary)}
+.msg-sources .src-file{font-weight:600;color:var(--text)}
+.chat-input-wrap{background:var(--bg-card);border-top:1px solid var(--border);padding:16px 20px}
+.chat-input-wrap .flex{display:flex;gap:10px;align-items:flex-end}
+.chat-input-wrap textarea{flex:1;resize:none;min-height:44px;max-height:120px;line-height:1.5}
+.chat-input-wrap button{padding:10px 24px;font-size:15px;height:44px}
+.thinking{display:flex;align-items:center;gap:8px;padding:12px 16px;color:var(--text-secondary);font-size:13px}
+.typing-dot{width:6px;height:6px;border-radius:50%;background:var(--text-secondary);animation:typing 1.4s infinite}
+.typing-dot:nth-child(2){animation-delay:.2s}
+.typing-dot:nth-child(3){animation-delay:.4s}
+@keyframes typing{0%,60%,100%{opacity:.3}30%{opacity:1}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.welcome{text-align:center;padding:60px 20px;color:var(--text-secondary)}
+.welcome h1{font-size:28px;color:var(--text);margin-bottom:12px}
+.welcome .suggestions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:24px}
+.welcome .suggestions button{padding:8px 18px;background:var(--bg);border:1px solid var(--border);border-radius:99px;font-size:13px;color:var(--text-secondary);cursor:pointer;transition:all .15s}
+.welcome .suggestions button:hover{background:var(--primary);color:#fff;border-color:var(--primary)}
+</style>
+</head>
+<body>
+<nav class="navbar">
+  <span class="logo">AI 问答助手</span>
+</nav>
+
+<div class="chat-wrap">
+  <div class="chat-messages" id="messages">
+    <div class="welcome">
+      <h1>Laike RAG 知识问答</h1>
+      <p>基于文档知识库的智能问答助手</p>
+      <div class="suggestions" id="suggestions"></div>
+    </div>
+  </div>
+  <div class="chat-input-wrap">
+    <div class="flex">
+      <textarea id="input" placeholder="输入您的问题..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}"></textarea>
+      <button class="btn-primary" onclick="send()" id="sendBtn">发送</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+const API = path => fetch(path).then(r => r.json());
+
+let history = [];
+
+// 自动调整输入框高度
+$('#input').addEventListener('input', function(){
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+// 加载建议问题
+async function loadSuggestions(){
+  try{
+    const data = await API('/admin/sources');
+    if(data.count > 0){
+      const tips = ['知识库中有哪些内容','请介绍一下文档概况','如何接入API','请注意哪些事项'];
+      $('#suggestions').innerHTML = tips.map(t => `<button onclick="quickAsk('${t}')">${t}</button>`).join('');
+    }
+  }catch(e){}
+}
+loadSuggestions();
+
+function quickAsk(q){
+  $('#input').value = q;
+  send();
+}
+
+async function send(){
+  const input = $('#input');
+  const msg = input.value.trim();
+  if(!msg) return;
+
+  const welcome = $('#messages .welcome');
+  if(welcome) welcome.remove();
+
+  addMessage('user', msg);
+  input.value = '';
+  input.style.height = 'auto';
+
+  // 只保留最近 10 条历史（5 轮对话）
+  history.push({role:'user',content:msg});
+  if(history.length > 10) history = history.slice(-10);
+  const ctxHistory = history.slice(0, -1); // 发送时不包含当前消息
+
+  const thinkingDiv = addThinking();
+
+  try{
+    const resp = await fetch('/api/chat', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({message: msg, history: ctxHistory})
+    });
+    const data = await resp.json();
+    thinkingDiv.remove();
+
+    if(data.code === 0){
+      addMessage('assistant', data.reply, data.sources);
+      history.push({role:'assistant',content:data.reply});
+      if(history.length > 10) history = history.slice(-10);
+    } else {
+      addMessage('assistant', '抱歉，处理您的问题时出错：' + (data.reply || '未知错误'));
+    }
+  }catch(e){
+    thinkingDiv.remove();
+    addMessage('assistant', '网络请求失败，请检查服务是否正常运行。');
+  }
+}
+
+function addMessage(role, content, sources){
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  const avatar = role === 'user' ? 'U' : 'AI';
+
+  let html = `<div class="msg-avatar">${avatar}</div>`;
+  html += `<div class="msg-bubble">
+    <div class="msg-text">${escapeHtml(content)}</div>`;
+
+  if(sources && sources.length > 0){
+    html += `<div class="msg-sources">
+      <div style="font-weight:600;margin-bottom:4px">参考来源：</div>`;
+    sources.forEach((s,i) => {
+      html += `<div class="src-item">[${i+1}] <span class="src-file">${s.file}</span> - ${escapeHtml(s.preview)}</div>`;
+    });
+    html += `</div>`;
+  }
+
+  html += `</div>`;
+  div.innerHTML = html;
+  $('#messages').appendChild(div);
+  scrollBottom();
+}
+
+function addThinking(){
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  div.innerHTML = `<div class="msg-avatar">AI</div>
+    <div class="thinking"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span> 思考中...</div>`;
+  $('#messages').appendChild(div);
+  scrollBottom();
+  return div;
+}
+
+function scrollBottom(){
+  const el = $('#messages');
+  el.scrollTop = el.scrollHeight;
+}
+
+function escapeHtml(text){
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML.replace(/\n/g,'<br>');
+}
+</script>
+</body>
+</html>
